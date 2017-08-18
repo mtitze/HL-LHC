@@ -195,8 +195,9 @@ class davst:
             try:
                 out.append(self.fit_single_seed(ki,kf,kd,s,minutes=minutes))
             except TypeError:
-                print(' ')
-                print('Fitting error for seed {0}'.format(s))
+                if verbose:
+                    print(' ')
+                    print('Fitting error for seed {0}'.format(s))
                 continue
 #         out = np.array(out)
         out = pd.DataFrame(out,columns=['seed','d','b','k','exda'])
