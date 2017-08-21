@@ -10,12 +10,13 @@ from scipy import integrate
 class davsang:
     '''Tools to load the dynamic aperture vs angle from a SixDeskDB'''
     
-    def __init__(self,studyname,directory='',emit=None):
+    def __init__(self,studyname,directory='',emit=None,verbose=False):
         # bind some variables and initialize the sqlite3 connection
         self.study     = studyname
         self.directory = directory
         conn           = sqlite3.connect(directory+studyname+'.db')
         self._c        = conn.cursor()
+        self.verbose   = verbose
         
         # load basic quantities from sixdb
         self._get_emit()
@@ -79,19 +80,19 @@ class davsang:
         self.dasum = pd.DataFrame(_summarydata,columns=['angle','minda','maxda','avgda'])
         
 
-    def plotDA(self,axis=None,fmt='o-',label=None):
+    def plotDA(self,axis=None,fmt='o-',label=None, capsize=3):
         if not label:
             label = self.directory
         if axis:
             axis.errorbar(self.dasum.angle,self.dasum.avgda,
                          yerr=[(self.dasum.avgda-self.dasum.minda),(self.dasum.maxda-self.dasum.avgda)],
-                         fmt=fmt, label=label)
+                          fmt=fmt, label=label, capsize=capsize)
             axis.set_xlabel('Angle [deg]')
             axis.set_ylabel(r'DA [$\sigma$]')
         else:
-            plt.errorbar(self.dasum.angle,self.dasum.avgda,
+            plt.errorbar(self.dasum.angle,self.dasum.avgda, 
                          yerr=[(self.dasum.avgda-self.dasum.minda),(self.dasum.maxda-self.dasum.avgda)],
-                         fmt=fmt, label=label)
+                         fmt=fmt, label=label, capsize=capsize)
             plt.xlabel('Angle [deg]')
             plt.ylabel(r'DA [$\sigma$]')
 
@@ -100,7 +101,7 @@ class davsang:
         '''Identify seeds with unphysical results. Typically these deliver results close to the 
         transition points with DA very close to an integer.'''
         self.badseeds = self.dynap[(self.dynap.da-self.dynap.da.round()).abs()<1e-4]
-        if len(self.badseeds)>0:
+        if len(self.badseeds)>0 and self.verbose:
             print('Found %i bad jobs for study %s' % (len(self.badseeds), self.study))
             print('All bad seeds are saved in self.badseeds')
 
