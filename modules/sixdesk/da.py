@@ -59,7 +59,7 @@ class davsang:
         # if required move old emittance values to new column
         if self._newemit is not None:
             self.dynap.assign(da_oldemit=self.dynap['da'])             
-            self.dynap['da'] = self.dynap['da']*((self.emit)/(self._newemit))
+            self.dynap['da'] = self.dynap['da']*((self.emit)/(self._newemit))**0.5
             
         # get the summary of the DA 
         self.get_DA_summary()
@@ -111,15 +111,30 @@ class davsang:
 class davst:    
     '''Tools to handle dynamic aperture vs. turn from SixDeskDB'''
     
-    def __init__(self,filename):
+    def __init__(self,filename,emit=None):
         self.data = self._get_data(filename)
+        self._get_emit(filename)
+        if emit is not None:
+            self._adjust_emittance(self.emit, emit)
         self.revf = 11245.5                                 # LHC revolution frequency
+        
+    def _get_emit(self, filename):
+        '''Get the emittance used in the SixDesk study'''
+        conn           = sqlite3.connect(filename)
+        c              = conn.cursor() 
+        c.execute("select value from env WHERE keyname='emit';")
+        data           = np.array(c.fetchall())
+        self.emit      = data[0][0]
         
     def _get_data(self,filename):
         '''Get the da_vst data from the SixDeskDB'''
         conn = sqlite3.connect(filename)
         daf  = pd.read_sql_query("select seed,dawsimp,dawsimperr,nturn from da_vst;", conn)    
         return daf
+
+    def _adjust_emittance(self, old, new):
+        self.data['dawsimp']    = self.data['dawsimp']*np.sqrt((old)/(new))
+        self.data['dawsimperr'] = self.data['dawsimperr']*np.sqrt((old)/(new))        
     
     def dafunction(self,x,d,b,k):
         return d + (b/(np.log10(x)**k))
