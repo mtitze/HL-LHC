@@ -22,8 +22,10 @@ def integrate_gauss(mux,sigx,boundaries,moment=0):
     
     return integrate.nquad(g,boundaries)
 
+def get_loss_from_da_series(pdseries, path=None,which='mean'):
+    return pdseries.apply(get_loss_from_da, path=None, which='mean')
 
-def get_loss_from_da(da,path=None):
+def get_loss_from_da(da,path=None,which='mean'):
     '''Returns the minimum,maximum and mean expectable loss for a given DA'''
 
     # by default use the distributions.h5 file in the module directory
@@ -45,8 +47,18 @@ def get_loss_from_da(da,path=None):
         loss.append([_a1,_sig2,dg.integrate([[da,np.inf]])])
         
     loss = pd.DataFrame(loss,columns=['a1','sig2','loss'])
-    
-    return loss.loss.min(), loss.loss.max(), loss.loss.mean()
+
+    if which=='min':
+        return loss['loss'].min()
+    elif which=='max':
+        return loss['loss'].max()
+    elif which=='mean':
+        return loss['loss'].mean()
+    elif which=='all':
+        return loss
+    elif which=='summary':
+        return loss['loss'].min(), loss['loss'].max() , loss['loss'].mean()      
+
 
 
 class dgauss:
