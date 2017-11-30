@@ -23,7 +23,7 @@ def integrate_gauss(mux,sigx,boundaries,moment=0):
     return integrate.nquad(g,boundaries)
 
 def get_loss_from_da_series(pdseries, path=None,which='mean'):
-    return pdseries.apply(get_loss_from_da, path=None, which='mean')
+    return pdseries.apply(get_loss_from_da, path=None, which=which)
 
 def get_loss_from_da(da,path=None,which='mean'):
     '''Returns the minimum,maximum and mean expectable loss for a given DA'''
@@ -36,15 +36,19 @@ def get_loss_from_da(da,path=None,which='mean'):
     hdf = pd.HDFStore(path)
     physical_dgauss_params = hdf['physical_dgauss_params']
     
+    ii=0
     loss = []
-    for _, line in physical_dgauss_params.head().iterrows():
+    for _, line in physical_dgauss_params.iterrows():
+        ii+=1
         _a1, _sig2 = line['a1'], line['sig2']
         
         # initialize the gaussian
         dg = dgauss(a1=_a1,sig1=1,sig2=_sig2)
         
+        # print("Checking distribution number {0}".format(ii),end='\r',flush=True)
         # append the relevant quantities
-        loss.append([_a1,_sig2,dg.integrate([[da,np.inf]])])
+        # loss.append([_a1,_sig2,dg.integrate([[da,np.inf]])])
+        loss.append([_a1,_sig2,0.5*dg.tailcontent(da)])
         
     loss = pd.DataFrame(loss,columns=['a1','sig2','loss'])
 
