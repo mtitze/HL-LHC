@@ -146,11 +146,10 @@ class davst:
         self._get_emit(filename)  # get emittance from sixdeskdb
         if emit is not None:
             self._adjust_emittance(self.emit, emit)  # adjust emittance if necessary
-
-        self.revf = 11245.5  # LHC revolution frequency
-        self._min_datapoints = 8  # min. number of data points required for fit
-        self.check_monotonicity = True  # check monotonicity
-        try:  # load existing fit parameters
+        self.revf = 11245.5                # LHC revolution frequency
+        self._min_datapoints = 8           # min. number of data points required for fit
+        self.check_monotonicity = True     # check monotonicity
+        try:                               # load existing fit parameters
             self._get_fit_params_from_db()
         except:
             pass
@@ -166,7 +165,12 @@ class davst:
     def _get_data(self, filename):
         '''Get the da_vst data from the SixDeskDB'''
         conn = sqlite3.connect(filename)
-        daf = pd.read_sql_query("select seed,dawsimp,dawsimperr,nturn,tlossmin from da_vst;", conn)
+        try:
+            query = "select seed, angle, dawsimp, dawsimperr, nturn, tlossmin from da_vst;"
+            daf = pd.read_sql_query(query, conn)
+        except pd.io.sql.DatabaseError:
+            query = "select seed, dawsimp, dawsimperr, nturn, tlossmin from da_vst;"
+            daf = pd.read_sql_query(query, conn)
         conn.close()
         return daf
 
@@ -230,11 +234,12 @@ class davst:
         turns = self.revf * (seconds + 60 * minutes + 3600 * hours)
         sec = hours * 60. * 60. + minutes * 60. + seconds
         exda = self.extrapolated_da
-        self.extrapolated_da['exda_{0}_sec'.format(int(sec))] = davst_function(turns, exda['d'], exda['b'], exda['k'])
+        exda_key = 'exda_{0}_sec'.format(int(sec))
+        self.extrapolated_da[exda_key] = davst_function(turns, exda['d'], exda['b'], exda['k'])
         if save:
             self.save_exda()
 
-    def clean_data_for_seed(self, seed):
+    def clean_data_for_seed(self, seed, dacol='dawsimp', daerrcol='dawsimperr', angle=None):
         '''Returns a data frame with the cleaned data for a single seed.
         Only points with the correct monotonicity will be selected.
         The algorithm will check if the minimum possible value for a data point B is
@@ -243,9 +248,13 @@ class davst:
 
         # extract data for selected seed
         dseed = self.data[self.data['seed'] == seed]
+
+        if angle is not None:
+            dseed = dseed[dseed['angle']==angle]
+
         # lastrow = dseed.iloc[-1] # always keep the last row
-        dseed = dseed.assign(dawsimpmerr=dseed['dawsimp'] - dseed['dawsimperr'])
-        dseed = dseed.assign(dawsimpperr=dseed['dawsimp'] + dseed['dawsimperr'])
+        dseed = dseed.assign(dawsimpmerr=dseed[dacol] - dseed[daerrcol])
+        dseed = dseed.assign(dawsimpperr=dseed[dacol] + dseed[daerrcol])
 
         if self.check_monotonicity:
             # ensure the monotonicity
@@ -253,8 +262,8 @@ class davst:
             while True:
                 initial_df_length = len(dseed)
                 # dseed = dseed[~(dseed['dawsimp'].diff()>=0.) & ~(dseed['tlossmin'].diff()<=0.)]
-                b = dseed['dawsimpmerr']  # dawsimp minus error
-                a = dseed['dawsimpperr'].shift(1)  # dawsimp plus error
+                b = dseed[daerrcol]  # dawsimp minus error
+                a = dseed[daerrcol].shift(1)  # dawsimp plus error
                 dseed = dseed[~(a - b < 0)]
                 final_df_length = len(dseed)
                 if initial_df_length == final_df_length:
@@ -296,12 +305,12 @@ class davst:
 
         return dafunc
 
-    def _fit_da_single_kappa(self, kappa, seed, xaxis, regularization=0):
+    def _fit_da_single_kappa(self, kappa, seed, xaxis, angle=None, regularization=0):
         '''Fits the DA for a single seed with a defined kappa
         Returns (d,b,kappa,chisquared), pcov'''
 
         # select data for the desired seed
-        data = self.clean_data_for_seed(seed)
+        data = self.clean_data_for_seed(seed, angle=angle)
         self.cleaned_data = data
 
         if len(data) < self._min_datapoints:
@@ -311,13 +320,20 @@ class davst:
         # get data for horizontal axis [turn] and vertical axis [DA] and DA error [dawsimperr]
         xdata = data[xaxis][1:]
         ydata = data['dawsimp'][1:]
-        yerr = data['dawsimperr'][1:]
+        if angle is None:
+            yerr = data['dawsimperr'][1:]
+        else:
+            yerr = None
 
         # generate the da function for the given kappa
         dafunc = self._generate_dafunction(kappa)
 
         # perform the fit
-        db, pcov = curve_fit(dafunc, xdata, ydata, sigma=yerr)
+        try:
+            db, pcov = curve_fit(dafunc, xdata, ydata, sigma=yerr)
+        except RuntimeError:
+            return 0, 0, 0, 1000, 0, 0
+
         d, b = db
 
         # calculate the chi square of the fit
@@ -328,28 +344,40 @@ class davst:
 
         return d, b, kappa, chisq, pcov[0, 0], pcov[1, 1]
 
-    def fit(self, seeds=range(1, 61), kappas=[-5, 5, 0.1], xaxis='nturnavg', regularization=0, save=False):
+    def fit(self, seeds=range(1, 61), kappas=[-5, 5, 0.1], angles = None,
+            xaxis='nturnavg', regularization=0, save=False):
         '''Fits the da for a given range of seeds and kappas.
 		A fit is only carried out if more than 8 data points are available.
 		The number of minimum datapoints required can be set by the self._min_datapoints variable.'''
         ki, kf, kstep = kappas
         results = []
 
-        # nested loop over seeds and possible values for kappa
-        for seed in seeds:
-            try:
-                output = []
-                for k in np.arange(ki, kf, kstep):
-                    d, b, kappa, chisq, derr, berr = self._fit_da_single_kappa(k, seed, xaxis,
-                                                                               regularization=regularization)
-                    output.append([seed, self.emit, d, b, kappa, chisq, derr, berr])
-                output = pd.DataFrame(output, columns=['seed', 'emit', 'd', 'b', 'k', 'chi', 'derr', 'berr'])
+        # columns of the output data frame
+        if angles is None:
+            cols = ['seed', 'angle', 'emit', 'd', 'b', 'k', 'chi', 'derr', 'berr']
+            angles = [None]
+        else:
+            cols = ['seed', 'angle', 'emit', 'd', 'b', 'k', 'chi', 'derr', 'berr']
 
-                indx_bestfit = output['chi'].argmin()  # index of the best fit
-                dfslice = output.iloc[indx_bestfit]  # get fit parameters of the best fit
-                results.append(dfslice)
-            except InsufficientDataError:
-                continue
+        # nested loop over seeds and possible values for kappa
+        for angle in angles:
+            for seed in seeds:
+                try:
+                    output = []
+                    for k in np.arange(ki, kf, kstep):
+                        d, b, kappa, chisq, derr, berr = self._fit_da_single_kappa(k, seed, xaxis,
+                                                                                    angle=angle,
+                                                                                    regularization=regularization)
+
+                        output.append([seed, angle, self.emit, d, b, kappa, chisq, derr, berr])
+
+                    output = pd.DataFrame(output, columns=cols)
+
+                    indx_bestfit = output['chi'].argmin()  # index of the best fit
+                    dfslice = output.iloc[indx_bestfit]  # get fit parameters of the best fit
+                    results.append(dfslice)
+                except InsufficientDataError:
+                    continue
         results = pd.DataFrame(results)
         results = results.reset_index(drop=True)
         self.fit_params = results[:]
