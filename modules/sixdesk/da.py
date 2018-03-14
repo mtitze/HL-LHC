@@ -148,7 +148,7 @@ class davst:
             self._adjust_emittance(self.emit, emit)  # adjust emittance if necessary
         self.revf = 11245.5                # LHC revolution frequency
         self._min_datapoints = 8           # min. number of data points required for fit
-        self.check_monotonicity = True     # check monotonicity
+        self.check_monotonicity = False    # check monotonicity
         try:                               # load existing fit parameters
             self._get_fit_params_from_db()
         except:
@@ -165,12 +165,8 @@ class davst:
     def _get_data(self, filename):
         '''Get the da_vst data from the SixDeskDB'''
         conn = sqlite3.connect(filename)
-        try:
-            query = "select seed, angle, dawsimp, dawsimperr, nturn, tlossmin from da_vst;"
-            daf = pd.read_sql_query(query, conn)
-        except pd.io.sql.DatabaseError:
-            query = "select seed, dawsimp, dawsimperr, nturn, tlossmin from da_vst;"
-            daf = pd.read_sql_query(query, conn)
+        query = "select * from da_vst;"
+        daf = pd.read_sql_query(query, conn)
         conn.close()
         return daf
 
@@ -185,14 +181,14 @@ class davst:
             self.fit_params = daf1[:]
         except:
             pass
-        # read extrapolated da
-        try:
-            conn = sqlite3.connect(self.filename)
-            daf2 = pd.read_sql_query("SELECT * FROM exda;", conn)
-            conn.close()
-            self.extrapolated_da = daf2[:]
-        except:
-            self.extrapolated_da = daf1[:]
+        # # read extrapolated da
+        # try:
+        #     conn = sqlite3.connect(self.filename)
+        #     daf2 = pd.read_sql_query("SELECT * FROM exda;", conn)
+        #     conn.close()
+        #     self.extrapolated_da = daf2[:]
+        # except:
+        #     self.extrapolated_da = daf1[:]
 
     def _adjust_emittance(self, old, new):
 
@@ -213,13 +209,13 @@ class davst:
         self.fit_params.to_sql('fit_parameters', conn, if_exists='replace', index=False)
         conn.close()
 
-    def save_exda(self):
-        '''Saves the fit parameters in the sixdeskdb database'''
-        conn = sqlite3.connect(self.filename)
-        self.extrapolated_da.to_sql('exda', conn, if_exists='replace', index=False)
-        conn.close()
+    # def save_exda(self):
+    #     '''Saves the fit parameters in the sixdeskdb database'''
+    #     conn = sqlite3.connect(self.filename)
+    #     self.extrapolated_da.to_sql('exda', conn, if_exists='replace', index=False)
+    #     conn.close()
 
-    def get_extrapolated_da(self, minutes=0, seconds=0, hours=0, save=False):
+    def get_extrapolated_da(self, minutes=0, seconds=0, hours=0, realizations=1, save=False):
         '''Calculate the extrapolated DA and save it to self.extrapolated_da
 
 		Parameters
@@ -233,11 +229,24 @@ class davst:
 		'''
         turns = self.revf * (seconds + 60 * minutes + 3600 * hours)
         sec = hours * 60. * 60. + minutes * 60. + seconds
-        exda = self.extrapolated_da
+
+        exda = self.fit_params
+
+        # randomly calculate possible realizations of the extrapolated da using the fitting error
+        if realizations>1:
+            exda = get_fitting_params_distribution(exda,realizations)
+
         exda_key = 'exda_{0}_sec'.format(int(sec))
+
+        self.extrapolated_da = exda
         self.extrapolated_da[exda_key] = davst_function(turns, exda['d'], exda['b'], exda['k'])
-        if save:
-            self.save_exda()
+
+        # adjust emittance
+        if self.emit != self.extrapolated_da['emit'][0]:
+            emittance_factor = np.sqrt(self.extrapolated_da['emit'][0]/self.emit)
+            self.extrapolated_da['emit']   = np.ones(len(self.extrapolated_da))*self.emit
+            self.extrapolated_da[exda_key] = self.extrapolated_da[exda_key]*emittance_factor
+
 
     def clean_data_for_seed(self, seed, dacol='dawsimp', daerrcol='dawsimperr', angle=None):
         '''Returns a data frame with the cleaned data for a single seed.
@@ -305,12 +314,12 @@ class davst:
 
         return dafunc
 
-    def _fit_da_single_kappa(self, kappa, seed, xaxis, angle=None, regularization=0):
+    def _fit_da_single_kappa(self, kappa, seed, xaxis, dacol='dawsimp', daerrcol='dawsimperr', angle=None, regularization=0):
         '''Fits the DA for a single seed with a defined kappa
         Returns (d,b,kappa,chisquared), pcov'''
 
         # select data for the desired seed
-        data = self.clean_data_for_seed(seed, angle=angle)
+        data = self.clean_data_for_seed(seed, angle=angle, dacol=dacol, daerrcol=daerrcol)
         self.cleaned_data = data
 
         if len(data) < self._min_datapoints:
@@ -319,9 +328,9 @@ class davst:
 
         # get data for horizontal axis [turn] and vertical axis [DA] and DA error [dawsimperr]
         xdata = data[xaxis][1:]
-        ydata = data['dawsimp'][1:]
+        ydata = data[dacol][1:]
         if angle is None:
-            yerr = data['dawsimperr'][1:]
+            yerr = data[daerrcol][1:]
         else:
             yerr = None
 
@@ -344,7 +353,7 @@ class davst:
 
         return d, b, kappa, chisq, pcov[0, 0], pcov[1, 1]
 
-    def fit(self, seeds=range(1, 61), kappas=[-5, 5, 0.1], angles = None,
+    def fit(self, seeds=range(1, 61), kappas=[-5, 5, 0.1], angles = None, dacol='dawsimp', daerrcol='dawsimperr',
             xaxis='nturnavg', regularization=0, save=False):
         '''Fits the da for a given range of seeds and kappas.
 		A fit is only carried out if more than 8 data points are available.
@@ -366,6 +375,7 @@ class davst:
                     output = []
                     for k in np.arange(ki, kf, kstep):
                         d, b, kappa, chisq, derr, berr = self._fit_da_single_kappa(k, seed, xaxis,
+                                                                                    dacol=dacol, daerrcol=daerrcol,
                                                                                     angle=angle,
                                                                                     regularization=regularization)
 
@@ -408,7 +418,10 @@ class beamloss:
     def get_loss_from_da_series(self, da_series):
         output = []
         for da in da_series:
-            output.append(self._get_loss_from_single_da(da))
+            try:
+                output.append(self._get_loss_from_single_da(da))
+            except KeyError:
+                pass
         output = np.array(output).flatten()
         return output
 
@@ -434,15 +447,17 @@ class beamloss:
 def get_fitting_params_distribution(df, size):
     '''Returns the distribution of fitting parameters using the fitting errors'''
     output = []
-    for row in df[['d', 'b', 'k', 'std_0', 'std_1']].iterrows():
+    # for row in df[['d', 'b', 'k', 'derr', 'berr']].iterrows():
+    for row in df.iterrows():
+
         row = row[1]
         # get the fit parameters
-        d_dist = np.random.normal(row['d'], scale=row['std_0'], size=size)
-        b_dist = np.random.normal(row['b'], scale=row['std_1'], size=size)
+        d_dist = np.random.normal(row['d'], scale=row['derr'], size=size)
+        b_dist = np.random.normal(row['b'], scale=row['berr'], size=size)
         k = row['k']
         for i in range(len(d_dist)):
-            output.append([d_dist[i], b_dist[i], k])
-    output = pd.DataFrame(output, columns=['d', 'b', 'k'])
+            output.append([row['seed'], row['angle'], row['emit'], d_dist[i], b_dist[i], k, 0, 0, 0])
+    output = pd.DataFrame(output, columns=['seed','angle', 'emit', 'd', 'b', 'k', 'chi', 'derr', 'berr'])
     return output
 
 
